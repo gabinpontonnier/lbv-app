@@ -49,10 +49,20 @@ function exportPDF(month, deliveries) {
 
 export default function ClientPortal({ clientId }) {
   const now = new Date()
+  const todayISO = now.toISOString().slice(0, 10)
   const [month, setMonth] = useState(now.toISOString().slice(0, 7))
   const [deliveries, setDeliveries] = useState([])
   const [recent, setRecent] = useState([])
   const [loading, setLoading] = useState(true)
+
+  // Demande
+  const [reqDate, setReqDate] = useState('')
+  const [reqPetit, setReqPetit] = useState(0)
+  const [reqGrand, setReqGrand] = useState(0)
+  const [reqNotes, setReqNotes] = useState('')
+  const [reqSaving, setReqSaving] = useState(false)
+  const [reqSuccess, setReqSuccess] = useState(false)
+  const [myRequests, setMyRequests] = useState([])
 
   // Dernières livraisons (5)
   useEffect(() => {
@@ -63,6 +73,13 @@ export default function ClientPortal({ clientId }) {
       .order('delivery_date', { ascending: false })
       .limit(5)
       .then(({ data }) => setRecent(data || []))
+    supabase
+      .from('delivery_requests')
+      .select('*')
+      .eq('client_id', clientId)
+      .gte('requested_date', todayISO)
+      .order('requested_date')
+      .then(({ data }) => setMyRequests(data || []))
   }, [clientId])
 
   // Livraisons du mois sélectionné
@@ -90,6 +107,34 @@ export default function ClientPortal({ clientId }) {
     }),
     { petitKits: 0, grandKits: 0, weight: 0 }
   )
+
+  const confirmReceipt = async (id) => {
+    await supabase.from('deliveries').update({ status: 'confirmed' }).eq('id', id)
+    setRecent(prev => prev.map(d => d.id === id ? { ...d, status: 'confirmed' } : d))
+  }
+
+  const sendRequest = async (e) => {
+    e.preventDefault()
+    if (!reqDate || (reqPetit === 0 && reqGrand === 0)) return
+    setReqSaving(true)
+    const { data, error } = await supabase.from('delivery_requests').insert({
+      client_id: clientId,
+      requested_date: reqDate,
+      petit_kits: reqPetit,
+      grand_kits: reqGrand,
+      notes: reqNotes.trim() || null,
+    }).select().single()
+    if (!error && data) {
+      setMyRequests(prev => [...prev, data].sort((a, b) => a.requested_date.localeCompare(b.requested_date)))
+      setReqDate('')
+      setReqPetit(0)
+      setReqGrand(0)
+      setReqNotes('')
+      setReqSuccess(true)
+      setTimeout(() => setReqSuccess(false), 3000)
+    }
+    setReqSaving(false)
+  }
 
   const months = []
   for (let i = 0; i < 6; i++) {
@@ -129,23 +174,33 @@ export default function ClientPortal({ clientId }) {
           ) : (
             <div className="divide-y divide-slate-50">
               {recent.map(d => (
-                <div key={d.id} className="px-4 py-3 flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold text-sm text-slate-800 capitalize">
-                      {new Date(d.delivery_date + 'T12:00:00').toLocaleDateString('fr-FR', {
-                        weekday: 'short', day: 'numeric', month: 'short'
-                      })}
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      {[
-                        d.petit_kits > 0 && `${d.petit_kits} petit${d.petit_kits > 1 ? 's' : ''}`,
-                        d.grand_kits > 0 && `${d.grand_kits} grand${d.grand_kits > 1 ? 's' : ''}`,
-                      ].filter(Boolean).join(' + ')}
-                    </p>
+                <div key={d.id} className="px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-semibold text-sm text-slate-800 capitalize">
+                        {new Date(d.delivery_date + 'T12:00:00').toLocaleDateString('fr-FR', {
+                          weekday: 'short', day: 'numeric', month: 'short'
+                        })}
+                      </p>
+                      <p className="text-xs text-slate-400">
+                        {[
+                          d.petit_kits > 0 && `${d.petit_kits} petit${d.petit_kits > 1 ? 's' : ''}`,
+                          d.grand_kits > 0 && `${d.grand_kits} grand${d.grand_kits > 1 ? 's' : ''}`,
+                        ].filter(Boolean).join(' + ')}
+                        {d.total_weight ? ` — ${d.total_weight} kg` : ''}
+                      </p>
+                    </div>
+                    {d.status === 'confirmed' ? (
+                      <span className="text-xs font-bold text-green-600 bg-green-50 px-2.5 py-1 rounded-full">✓ Reçu</span>
+                    ) : (
+                      <button
+                        onClick={() => confirmReceipt(d.id)}
+                        className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full active:scale-95 transition-all"
+                      >
+                        Confirmer réception
+                      </button>
+                    )}
                   </div>
-                  {d.total_weight && (
-                    <span className="font-bold text-slate-700">{d.total_weight} kg</span>
-                  )}
                 </div>
               ))}
             </div>
@@ -201,6 +256,79 @@ export default function ClientPortal({ clientId }) {
               </div>
             </>
           )}
+        </div>
+
+        {/* Demandes / prévisions */}
+        <div className="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b border-slate-50">
+            <p className="font-bold text-slate-800">📅 Prévenir d'un besoin</p>
+            <p className="text-xs text-slate-400 mt-0.5">Indiquez un prochain besoin en linge pour qu'on s'organise</p>
+          </div>
+
+          {/* Mes demandes en attente */}
+          {myRequests.length > 0 && (
+            <div className="divide-y divide-slate-50">
+              {myRequests.map(r => (
+                <div key={r.id} className="px-4 py-2.5 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700 capitalize">
+                      {new Date(r.requested_date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {[r.petit_kits > 0 && `${r.petit_kits} petit${r.petit_kits > 1 ? 's' : ''}`, r.grand_kits > 0 && `${r.grand_kits} grand${r.grand_kits > 1 ? 's' : ''}`].filter(Boolean).join(' + ')}
+                      {r.notes ? ` — ${r.notes}` : ''}
+                    </p>
+                  </div>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${r.status === 'seen' ? 'bg-green-50 text-green-600' : 'bg-amber-50 text-amber-600'}`}>
+                    {r.status === 'seen' ? '✓ Vu' : 'En attente'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={sendRequest} className="px-4 py-4 space-y-3 border-t border-slate-50">
+            <input
+              type="date"
+              value={reqDate}
+              min={todayISO}
+              onChange={e => setReqDate(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-slate-50 rounded-xl p-3">
+                <p className="text-xs text-slate-500 font-semibold mb-2">Petits kits</p>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setReqPetit(p => Math.max(0, p - 1))} className="w-8 h-8 rounded-lg bg-white border border-slate-200 font-bold text-slate-600">-</button>
+                  <span className="font-bold text-slate-900 w-6 text-center">{reqPetit}</span>
+                  <button type="button" onClick={() => setReqPetit(p => p + 1)} className="w-8 h-8 rounded-lg bg-white border border-slate-200 font-bold text-blue-600">+</button>
+                </div>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <p className="text-xs text-slate-500 font-semibold mb-2">Grands kits</p>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setReqGrand(p => Math.max(0, p - 1))} className="w-8 h-8 rounded-lg bg-white border border-slate-200 font-bold text-slate-600">-</button>
+                  <span className="font-bold text-slate-900 w-6 text-center">{reqGrand}</span>
+                  <button type="button" onClick={() => setReqGrand(p => p + 1)} className="w-8 h-8 rounded-lg bg-white border border-slate-200 font-bold text-blue-600">+</button>
+                </div>
+              </div>
+            </div>
+            <input
+              value={reqNotes}
+              onChange={e => setReqNotes(e.target.value)}
+              placeholder="Note (ex: semaine chargée, besoin urgent...)"
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {reqSuccess && <p className="text-green-600 text-sm font-bold text-center">✓ Demande envoyée !</p>}
+            <button
+              type="submit"
+              disabled={reqSaving || !reqDate || (reqPetit === 0 && reqGrand === 0)}
+              className="w-full bg-blue-600 text-white py-3 rounded-2xl font-bold disabled:opacity-40 active:scale-95 transition-all"
+            >
+              {reqSaving ? 'Envoi...' : 'Envoyer la prévision'}
+            </button>
+          </form>
         </div>
 
         {/* Contact */}
