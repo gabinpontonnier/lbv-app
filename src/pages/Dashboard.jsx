@@ -115,7 +115,7 @@ export default function Dashboard() {
     supabase.from('clients').select('*').then(({ data }) => {
       if (data) setClientsMap(Object.fromEntries(data.map(c => [c.id, c])))
     })
-    supabase.from('delivery_requests').select('*').lte('requested_date', shiftDate(todayISO, 7)).gte('requested_date', todayISO).order('requested_date').then(({ data }) => setRequests(data || []))
+    supabase.from('delivery_requests').select('*, clients(name)').gte('requested_date', todayISO).order('requested_date').then(({ data }) => setRequests(data || []))
   }, [])
 
   const loadDay = useCallback(async (date) => {
@@ -132,15 +132,14 @@ export default function Dashboard() {
   const loadWeek = useCallback(async (start) => {
     setLoading(true)
     const days = weekDays(start)
-    const { data } = await supabase
-      .from('deliveries')
-      .select('*, delivery_items(*, articles(*), residents(*))')
-      .gte('delivery_date', days[0])
-      .lte('delivery_date', days[6])
-      .order('delivery_date')
+    const [{ data: dels }, { data: reqs }] = await Promise.all([
+      supabase.from('deliveries').select('*, delivery_items(*, articles(*), residents(*))').gte('delivery_date', days[0]).lte('delivery_date', days[6]).order('delivery_date'),
+      supabase.from('delivery_requests').select('*, clients(name)').gte('requested_date', days[0]).lte('requested_date', days[6]).order('requested_date'),
+    ])
     const grouped = {}
-    days.forEach(d => { grouped[d] = [] })
-    ;(data || []).forEach(d => { if (grouped[d.delivery_date]) grouped[d.delivery_date].push(d) })
+    days.forEach(d => { grouped[d] = { deliveries: [], requests: [] } })
+    ;(dels || []).forEach(d => { if (grouped[d.delivery_date]) grouped[d.delivery_date].deliveries.push(d) })
+    ;(reqs || []).forEach(r => { if (grouped[r.requested_date]) grouped[r.requested_date].requests.push(r) })
     setWeekDeliveries(grouped)
     setLoading(false)
   }, [])
@@ -174,7 +173,7 @@ export default function Dashboard() {
 
   const markRequestSeen = async (id) => {
     await supabase.from('delivery_requests').update({ status: 'seen' }).eq('id', id)
-    setRequests(prev => prev.filter(r => r.id !== id))
+    setRequests(prev => prev.map(r => r.id === id ? { ...r, status: 'seen' } : r))
   }
 
   const isToday = selectedDate === todayISO
@@ -259,25 +258,56 @@ export default function Dashboard() {
           : (
             <div className="space-y-3">
               {days.map(day => {
-                const dayDels = weekDeliveries[day] || []
+                const dayDels = weekDeliveries[day]?.deliveries || []
+                const dayReqsCount = (weekDeliveries[day]?.requests || []).length
                 const isT = day === todayISO
                 const isFuture = day > todayISO
                 return (
                   <div key={day} className={`rounded-2xl border overflow-hidden ${isT ? 'border-blue-200' : 'border-slate-100'}`}>
                     <div className={`px-4 py-2.5 flex items-center justify-between ${isT ? 'bg-blue-600' : 'bg-slate-50'}`}>
                       <p className={`font-bold text-sm capitalize ${isT ? 'text-white' : 'text-slate-700'}`}>{shortDay(day)}{isT ? ' — Aujourd\'hui' : ''}</p>
-                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${isT ? 'bg-blue-500 text-white' : dayDels.length > 0 ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-400'}`}>{dayDels.length}</span>
-                    </div>
-                    {dayDels.length > 0 && (
-                      <div className="divide-y divide-slate-50">
-                        {dayDels.map(del => (
-                          <DeliveryCard key={del.id} del={del} client={clientsMap[del.client_id]} onDelete={deleteDelivery} deleting={deleting} onConfirm={confirmDelivery} />
-                        ))}
+                      <div className="flex items-center gap-1.5">
+                        {dayDels.length > 0 && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${isT ? 'bg-blue-500 text-white' : 'bg-blue-100 text-blue-700'}`}>{dayDels.length}</span>}
+                        {dayReqsCount > 0 && <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-200 text-amber-700">📅 {dayReqsCount}</span>}
+                        {dayDels.length === 0 && dayReqsCount === 0 && <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-400">0</span>}
                       </div>
-                    )}
-                    {dayDels.length === 0 && !isFuture && (
-                      <p className="text-xs text-slate-400 text-center py-3">Aucune livraison</p>
-                    )}
+                    </div>
+                    {(() => {
+                      const dayDels = weekDeliveries[day]?.deliveries || []
+                      const dayReqs = weekDeliveries[day]?.requests || []
+                      return (
+                        <>
+                          {dayDels.length > 0 && (
+                            <div className="divide-y divide-slate-50">
+                              {dayDels.map(del => (
+                                <DeliveryCard key={del.id} del={del} client={clientsMap[del.client_id]} onDelete={deleteDelivery} deleting={deleting} onConfirm={confirmDelivery} />
+                              ))}
+                            </div>
+                          )}
+                          {dayReqs.length > 0 && (
+                            <div className="divide-y divide-amber-50">
+                              {dayReqs.map(r => (
+                                <div key={r.id} className="px-4 py-2.5 bg-amber-50 flex items-center justify-between">
+                                  <div>
+                                    <p className="text-xs font-bold text-amber-700">📅 Demande — {r.clients?.name}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {[r.petit_kits > 0 && `${r.petit_kits} petit${r.petit_kits > 1 ? 's' : ''}`, r.grand_kits > 0 && `${r.grand_kits} grand${r.grand_kits > 1 ? 's' : ''}`].filter(Boolean).join(' + ')}
+                                      {r.notes ? ` — ${r.notes}` : ''}
+                                    </p>
+                                  </div>
+                                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${r.status === 'seen' ? 'bg-green-100 text-green-600' : 'bg-amber-200 text-amber-700'}`}>
+                                    {r.status === 'seen' ? 'Vu' : '!'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {dayDels.length === 0 && dayReqs.length === 0 && !isFuture && (
+                            <p className="text-xs text-slate-400 text-center py-3">Aucune livraison</p>
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                 )
               })}
