@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export default function Settings() {
-  const [tab, setTab] = useState('residents') // 'residents' | 'articles'
+  const [tab, setTab] = useState('residents') // 'residents' | 'articles' | 'calendriers'
 
   // Résidents
   const [clients, setClients] = useState([])
@@ -18,6 +18,11 @@ export default function Settings() {
   const [newArticleName, setNewArticleName] = useState('')
   const [savingArticle, setSavingArticle] = useState(false)
 
+  // Calendriers iCal
+  const [concierges, setConcierges] = useState([])
+  const [icalEdits, setIcalEdits] = useState({}) // { [id]: { url, petit, grand } }
+  const [icalSaving, setIcalSaving] = useState(null)
+
   useEffect(() => {
     supabase.from('clients').select('*').eq('type', 'residence').order('name').then(({ data }) => {
       if (data) {
@@ -25,7 +30,22 @@ export default function Settings() {
         if (data.length > 0) setSelectedClientId(data[0].id)
       }
     })
+    supabase.from('clients').select('*').eq('type', 'conciergerie').order('name').then(({ data }) => {
+      if (data) {
+        setConcierges(data)
+        const edits = {}
+        data.forEach(c => { edits[c.id] = { url: c.ical_url || '', petit: c.default_petit_kits ?? 1, grand: c.default_grand_kits ?? 0 } })
+        setIcalEdits(edits)
+      }
+    })
   }, [])
+
+  const saveIcal = async (id) => {
+    setIcalSaving(id)
+    const e = icalEdits[id]
+    await supabase.from('clients').update({ ical_url: e.url.trim() || null, default_petit_kits: e.petit, default_grand_kits: e.grand }).eq('id', id)
+    setIcalSaving(null)
+  }
 
   useEffect(() => {
     if (!selectedClientId) return
@@ -113,17 +133,14 @@ export default function Settings() {
 
       {/* Onglets */}
       <div className="flex bg-slate-100 rounded-2xl p-1 mb-5">
-        <button
-          onClick={() => setTab('residents')}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${tab === 'residents' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}
-        >
+        <button onClick={() => setTab('residents')} className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${tab === 'residents' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>
           👥 Résidents
         </button>
-        <button
-          onClick={() => setTab('articles')}
-          className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${tab === 'articles' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}
-        >
+        <button onClick={() => setTab('articles')} className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${tab === 'articles' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>
           🏷 Articles
+        </button>
+        <button onClick={() => setTab('calendriers')} className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${tab === 'calendriers' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>
+          📅 iCal
         </button>
       </div>
 
@@ -200,6 +217,45 @@ export default function Settings() {
             <p className="text-sm text-slate-600">Les résidents inactifs n'apparaissent plus dans le formulaire de livraison mais leurs données sont conservées.</p>
           </div>
         </>
+      )}
+
+      {/* ── Onglet Calendriers ── */}
+      {tab === 'calendriers' && (
+        <div className="space-y-4">
+          {concierges.length === 0 && <p className="text-center text-slate-400 text-sm py-8">Aucune conciergerie enregistrée.</p>}
+          {concierges.map(c => {
+            const e = icalEdits[c.id] || { url: '', petit: 1, grand: 0 }
+            return (
+              <div key={c.id} className="bg-white rounded-2xl border border-slate-100 p-4 space-y-3">
+                <p className="font-bold text-slate-800">{c.name}</p>
+                <div>
+                  <p className="text-xs text-slate-500 font-semibold mb-1">URL iCal</p>
+                  <input
+                    value={e.url}
+                    onChange={ev => setIcalEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], url: ev.target.value } }))}
+                    placeholder="https://www.airbnb.com/calendar/ical/..."
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[['Petits kits / check-in', 'petit'], ['Grands kits / check-in', 'grand']].map(([label, key]) => (
+                    <div key={key} className="bg-slate-50 rounded-xl p-3">
+                      <p className="text-xs text-slate-500 font-semibold mb-2">{label}</p>
+                      <div className="flex items-center justify-between">
+                        <button type="button" onClick={() => setIcalEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], [key]: Math.max(0, prev[c.id][key] - 1) } }))} className="w-7 h-7 rounded-lg bg-white border border-slate-200 font-bold text-sm">-</button>
+                        <span className="font-bold text-slate-900 text-sm">{e[key]}</span>
+                        <button type="button" onClick={() => setIcalEdits(prev => ({ ...prev, [c.id]: { ...prev[c.id], [key]: prev[c.id][key] + 1 } }))} className="w-7 h-7 rounded-lg bg-white border border-slate-200 font-bold text-sm text-blue-600">+</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => saveIcal(c.id)} disabled={icalSaving === c.id} className="w-full py-2.5 rounded-xl bg-blue-600 text-white font-bold text-sm disabled:opacity-40 active:scale-95">
+                  {icalSaving === c.id ? 'Sauvegarde...' : '✓ Sauvegarder'}
+                </button>
+              </div>
+            )
+          })}
+        </div>
       )}
 
       {/* ── Onglet Articles ── */}
